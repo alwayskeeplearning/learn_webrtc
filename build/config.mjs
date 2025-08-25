@@ -1,40 +1,41 @@
 const Targets = ['chrome >= 49', 'edge >= 88'];
 
 const Polyfill = {
-    mode: 'usage',
-    coreJs: '3.39.0',
-    targets:Targets,
-  };
+  mode: 'usage',
+  coreJs: '3.39.0',
+  targets: Targets,
+};
 
 const DevServer = {
-    client: {
-      logging: 'info',
-      overlay: true,
-      progress: true,
+  server: 'https',
+  client: {
+    logging: 'info',
+    overlay: true,
+    progress: true,
+  },
+  headers: {
+    'Access-Control-Allow-Origin': '*',
+  },
+  historyApiFallback: {
+    disableDotRule: true,
+  },
+  host: 'local-ip',
+  hot: true,
+  open: true,
+  port: 2333,
+  proxy: [
+    {
+      context: ['/api'],
+      target: 'http://localhost:3000',
+      // pathRewrite: { '^/api': '' },
     },
-    headers: {
-      'Access-Control-Allow-Origin': '*',
+    {
+      context: ['/federation_provider'],
+      target: 'http://localhost:2333',
+      changeOrigin: true,
     },
-    historyApiFallback: {
-      disableDotRule: true,
-    },
-    host: 'local-ip',
-    hot: true,
-    open: true,
-    port: 2333,
-    proxy: [
-      {
-        context: ['/api'],
-        target: 'http://localhost:3000',
-        // pathRewrite: { '^/api': '' },
-      },
-      {
-        context: ['/federation_provider'],
-        target: 'http://localhost:2333',
-        changeOrigin: true,
-      },
-    ],
-  };
+  ],
+};
 
 const ENV = {
   development: {
@@ -57,4 +58,4 @@ const BUILD_ANALYZER = false;
 
 const Preview_PORT = 8081;
 
-export {Targets,Polyfill,DevServer, ENV, BUILD_ANALYZER,Preview_PORT };
+export { Targets, Polyfill, DevServer, ENV, BUILD_ANALYZER, Preview_PORT };
