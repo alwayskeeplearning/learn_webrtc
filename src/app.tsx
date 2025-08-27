@@ -22,6 +22,8 @@ const App = () => {
 
   // --- 共享屏幕状态 ---
   const [isSharing, setIsSharing] = useState(false);
+  // --- 通话状态 ---
+  const [callInProgress, setCallInProgress] = useState(false);
 
   // --- WebSocket 连接逻辑 ---
   useEffect(() => {
@@ -60,6 +62,9 @@ const App = () => {
         if (socketRef.current) {
             console.log('发送 Answer');
             socketRef.current.send(JSON.stringify({ type: 'answer', answer: answer }));
+            // *** 关键修复 ***
+            // 对于被叫方，此时通话也已开始，更新其UI状态
+            setCallInProgress(true);
         }
       } else if (message.type === 'answer') {
         // --- 呼叫方逻辑 ---
@@ -78,6 +83,11 @@ const App = () => {
             console.error('添加 ICE Candidate 失败:', error);
           }
         }
+      } else if (message.type === 'hangup') {
+        // --- 收到对方的挂断信令 ---
+        console.log('收到挂断信令');
+        // 直接调用挂断处理函数，但不需要再发送 hangup 消息
+        handleHangupClick(false);
       }
     };
 
@@ -171,6 +181,8 @@ const App = () => {
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
       console.log('创建 Offer 成功，并设置为本地描述。ICE Agent 开始收集 Candidates...');
+      // 更新通话状态
+      setCallInProgress(true);
       // 步骤 3.4: 通过信令服务器发送 Offer
       if (socketRef.current) {
         console.log('发送 Offer');
@@ -209,20 +221,57 @@ const App = () => {
       }
     };
 
+  const handleHangupClick = (shouldNotifyPeer = true) => {
+    console.log('挂断按钮被点击');
+
+    // 0. (新增) 通知对方挂断
+    if (shouldNotifyPeer && socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+      console.log('发送挂断信令');
+      socketRef.current.send(JSON.stringify({ type: 'hangup' }));
+    }
+
+    // 1. 关闭 RTCPeerConnection
+    if (peerConnectionRef.current) {
+      peerConnectionRef.current.close();
+      peerConnectionRef.current = null;
+    }
+
+    // 2. 停止本地媒体流轨道
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach(track => track.stop());
+      localStreamRef.current = null;
+    }
+    
+    // 3. 重置UI状态
+    // a. 清理 video 元素的 srcObject
+    if (localVideoRef.current) {
+      localVideoRef.current.srcObject = null;
+    }
+    if (remoteVideoRef.current) {
+      remoteVideoRef.current.srcObject = null;
+    }
+    
+    // b. 通过更新 state 来重置按钮状态
+    setIsSharing(false);
+    setCallInProgress(false);
+  };
+
   useEffect(() => {
     const startButton = startButtonRef.current!;
     const callButton = callButtonRef.current!;
     const hangupButton = hangupButtonRef.current!;
     if (isSharing) {
       startButton.disabled = true;
-      callButton.disabled = false;
-      hangupButton.disabled = false;
+      // 当通话进行中时，禁用呼叫按钮
+      callButton.disabled = callInProgress;
+      // 只有在通话进行中时，才启用挂断按钮
+      hangupButton.disabled = !callInProgress;
     } else {
       startButton.disabled = false;
       callButton.disabled = true;
       hangupButton.disabled = true;
     }
-  }, [isSharing]);
+  }, [isSharing, callInProgress]);
 
   const handleMouseEnter = () => {
     console.log('handleMouseEnter', localVideoRef.current?.readyState, isSharing);
@@ -273,7 +322,7 @@ const App = () => {
         <button ref={callButtonRef} className={styles.button} onClick={handleCallClick}>
           呼叫
         </button>
-        <button ref={hangupButtonRef} className={styles.button}>
+        <button ref={hangupButtonRef} className={styles.button} onClick={() => handleHangupClick(true)}>
           挂断
         </button>
       </div>
