@@ -1,329 +1,386 @@
-import  { useRef, useEffect, useState } from 'react';
+import { useReducer, useRef, useEffect, useState } from 'react';
 import styles from './app.less';
 
+// 步骤 5.1: 将硬编码的常量提取出来
+const SIGNALING_SERVER_URL = 'wss://10.10.6.13:8080';
+const STUN_SERVERS = {
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun.qq.com:3478' },
+    { urls: 'stun:stun.miwifi.com:3478' },
+  ],
+};
+
+// 步骤 5.1: 使用枚举（或常量对象）来定义清晰的通话状态
+const CallStatus = {
+  IDLE: 'idle', // 空闲，未开始共享
+  SHARING: 'sharing', // 已共享屏幕，但未通话
+  CALLING: 'calling', // 正在呼叫（对于主叫方）
+  IN_CALL: 'in_call', // 通话中
+};
+
+// 步骤 5.1: 定义 state 的类型 (增加 dataChannel 和 messages)
+interface IState {
+  callStatus: string;
+  localStream: MediaStream | null;
+  remoteStream: MediaStream | null;
+  peerConnection: RTCPeerConnection | null;
+  socket: WebSocket | null;
+  dataChannel: RTCDataChannel | null; // 新增: 数据通道实例
+}
+
+// 步骤 5.1: 定义 Action 的类型 (增加 dataChannel action)
+type Action =
+  | { type: 'SET_CALL_STATUS'; payload: string }
+  | { type: 'SET_LOCAL_STREAM'; payload: MediaStream | null }
+  | { type: 'SET_REMOTE_STREAM'; payload: MediaStream | null }
+  | { type: 'SET_PEER_CONNECTION'; payload: RTCPeerConnection | null }
+  | { type: 'SET_SOCKET'; payload: WebSocket | null }
+  | { type: 'SET_DATA_CHANNEL'; payload: RTCDataChannel | null } // 新增
+  | { type: 'RESET_STATE' };
+
+// 步骤 5.1: 初始状态 (增加 dataChannel 和 messages)
+const initialState: IState = {
+  callStatus: CallStatus.IDLE,
+  localStream: null,
+  remoteStream: null,
+  peerConnection: null,
+  socket: null,
+  dataChannel: null, // 新增
+};
+
+// 步骤 5.1: 创建 Reducer 函数 (处理 dataChannel action)
+function reducer(state: IState, action: Action): IState {
+  switch (action.type) {
+    case 'SET_CALL_STATUS':
+      return { ...state, callStatus: action.payload };
+    case 'SET_LOCAL_STREAM':
+      return { ...state, localStream: action.payload };
+    case 'SET_REMOTE_STREAM':
+      return { ...state, remoteStream: action.payload };
+    case 'SET_PEER_CONNECTION':
+      return { ...state, peerConnection: action.payload };
+    case 'SET_SOCKET':
+      return { ...state, socket: action.payload };
+    case 'SET_DATA_CHANNEL':
+      return { ...state, dataChannel: action.payload };
+    case 'RESET_STATE':
+      // 在挂断时重置状态，但不重置 socket 连接
+      return {
+        ...initialState,
+        socket: state.socket, // 保留 socket 实例
+      };
+    default:
+      return state;
+  }
+}
+
 const App = () => {
-  // 创建 Refs 来安全地引用 DOM 元素
+  const [state, dispatch] = useReducer(reducer, initialState);
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
+  const [messages, setMessages] = useState<string[]>([]); // 新增: 存储聊天消息
+  const [chatInput, setChatInput] = useState(''); // 新增: 聊天输入框内容
 
-  // 创建一个 Ref 来存储本地媒体流对象
-  const localStreamRef = useRef<MediaStream | null>(null);
+  // 步骤 5.1 修复: 创建一个 ref 来持有最新的 state，解决陈旧闭包问题
+  const stateRef = useRef(state);
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
 
-  // 创建一个 Ref 来存储 RTCPeerConnection 实例
-  const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
-  
-  // 创建一个 Ref 来存储 WebSocket 实例
-  const socketRef = useRef<WebSocket | null>(null);
+  // 将 state 中的流同步到 video 元素
+  useEffect(() => {
+    if (localVideoRef.current) {
+      localVideoRef.current.srcObject = state.localStream;
+    }
+  }, [state.localStream]);
 
-  // --- 按钮的 Refs ---
-  const startButtonRef = useRef<HTMLButtonElement>(null);
-  const callButtonRef = useRef<HTMLButtonElement>(null);
-  const hangupButtonRef = useRef<HTMLButtonElement>(null);
-
-  // --- 共享屏幕状态 ---
-  const [isSharing, setIsSharing] = useState(false);
-  // --- 通话状态 ---
-  const [callInProgress, setCallInProgress] = useState(false);
+  useEffect(() => {
+    if (remoteVideoRef.current) {
+      remoteVideoRef.current.srcObject = state.remoteStream;
+    }
+  }, [state.remoteStream]);
 
   // --- WebSocket 连接逻辑 ---
   useEffect(() => {
-    // 步骤 2.3 (已更新): 连接到安全的、内网可访问的信令服务器
-    const socket = new WebSocket('wss://10.10.6.13:8080');
+    const socket = new WebSocket(SIGNALING_SERVER_URL);
+    dispatch({ type: 'SET_SOCKET', payload: socket });
 
-    socket.onopen = () => {
-      console.log('成功连接到信令服务器');
-    };
+    socket.onopen = () => console.log('成功连接到信令服务器');
+    socket.onclose = () => console.log('与信令服务器的连接已关闭');
+    socket.onerror = (error) => console.error('WebSocket 发生错误:', error);
 
     socket.onmessage = async (event) => {
+      // 步骤 5.1 修复: 从 ref 中读取最新的 state
+      const currentState = stateRef.current;
       const message = JSON.parse(event.data);
       console.log('收到信令消息:', message);
 
-      if (message.type === 'offer') {
-        // --- 被叫方逻辑 ---
-        console.log('收到 Offer');
-        // 确保本地流已准备好
-        if (!localStreamRef.current) {
-            console.error('收到 offer 时，本地媒体流尚未准备好');
-            return;
-        }
-        // 1. 创建 PeerConnection (如果不存在)
-        const pc = createPeerConnection();
-        // 2. 将本地流添加到连接
-        localStreamRef.current.getTracks().forEach(track => {
-            pc.addTrack(track, localStreamRef.current!);
-        });
-        // 3. 设置远程描述
-        await pc.setRemoteDescription(new RTCSessionDescription(message.offer));
-        // 4. 创建 Answer
-        const answer = await pc.createAnswer();
-        // 5. 设置本地描述
-        await pc.setLocalDescription(answer);
-        // 6. 发送 Answer
-        if (socketRef.current) {
-            console.log('发送 Answer');
-            socketRef.current.send(JSON.stringify({ type: 'answer', answer: answer }));
-            // *** 关键修复 ***
-            // 对于被叫方，此时通话也已开始，更新其UI状态
-            setCallInProgress(true);
-        }
-      } else if (message.type === 'answer') {
-        // --- 呼叫方逻辑 ---
-        console.log('收到 Answer');
-        if (peerConnectionRef.current) {
-          // 设置远程描述
-          await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(message.answer));
-        }
-      } else if (message.type === 'candidate') {
-        // --- 公共逻辑：接收并添加 ICE Candidate ---
-        console.log('收到 ICE Candidate');
-        if (peerConnectionRef.current) {
-          try {
-            await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(message.candidate));
-          } catch (error) {
-            console.error('添加 ICE Candidate 失败:', error);
-          }
-        }
-      } else if (message.type === 'hangup') {
-        // --- 收到对方的挂断信令 ---
-        console.log('收到挂断信令');
-        // 直接调用挂断处理函数，但不需要再发送 hangup 消息
-        handleHangupClick(false);
+      switch (message.type) {
+        case 'offer':
+          await handleOffer(message.offer, currentState);
+          break;
+        case 'answer':
+          await handleAnswer(message.answer, currentState);
+          break;
+        case 'candidate':
+          await handleCandidate(message.candidate, currentState);
+          break;
+        case 'hangup':
+          handleHangup(false); // 收到对方挂断信令，被动挂断
+          break;
+        default:
+          break;
       }
     };
 
-    socket.onclose = () => {
-      console.log('与信令服务器的连接已关闭');
-    };
-
-    socket.onerror = (error) => {
-      console.error('WebSocket 发生错误:', error);
-    };
-
-    // 将 socket 实例存入 ref
-    socketRef.current = socket;
-
-    // 在组件卸载时，清理 WebSocket 连接
     return () => {
       socket.close();
     };
-  }, []); // 空依赖数组意味着这个 effect 只会在组件挂载时运行一次
+  }, []); // 空依赖数组，仅在组件挂载时运行一次
 
-  const createPeerConnection = () => {
-    console.log('创建 RTCPeerConnection');
-    // 步骤 3.3: 创建 RTCPeerConnection 并配置 STUN 服务器
-    const configuration = {
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' },
-        // 增加国内常用的 STUN 服务器作为备用，提高成功率
-        { urls: 'stun:stun.qq.com:3478' },
-        { urls: 'stun:stun.miwifi.com:3478' },
-      ],
-    };
-    const pc = new RTCPeerConnection(configuration);
-
-    // 步骤 3.3: 设置 onicecandidate 事件处理器
-    pc.onicecandidate = (event) => {
-      if (event.candidate) {
-        // event.candidate.candidate 是一个包含详细信息的字符串
-        const candidateString = event.candidate.candidate;
-        console.log('发现新的 ICE Candidate:', candidateString);
-        
-        // 判断并打印 Candidate 类型
-        if (candidateString.includes("typ host")) {
-          console.log("类型: Host Candidate (本地地址)");
-        } else if (candidateString.includes("typ srflx")) {
-          console.log("类型: Server Reflexive Candidate (STUN 公网地址)");
-        } else if (candidateString.includes("typ relay")) {
-          console.log("类型: Relayed Candidate (TURN 中继地址)");
-        }
-
-        // 步骤 3.5: 通过信令服务器将这个 candidate 发送给对方
-        if (socketRef.current) {
-            socketRef.current.send(JSON.stringify({ type: 'candidate', candidate: event.candidate }));
-        }
-      }
+  const setupDataChannelEvents = (dataChannel: RTCDataChannel) => {
+    dataChannel.onopen = () => {
+      console.log('数据通道已打开');
+      setMessages(prev => [...prev, '系统：聊天通道已连接！']);
     };
 
-    // 步骤 3.3 / 3.6: 设置 ontrack 事件处理器
-    pc.ontrack = (event) => {
-      console.log('接收到远程媒体流:', event.streams[0]);
-      if (remoteVideoRef.current && remoteVideoRef.current.srcObject !== event.streams[0]) {
-        remoteVideoRef.current.srcObject = event.streams[0];
-      }
+    dataChannel.onmessage = (event) => {
+      console.log('收到数据通道消息:',dataChannel, event.data);
+      setMessages(prev => [...prev, `对方: ${event.data}`]);
     };
 
-    // 将创建的实例存入 ref
-    peerConnectionRef.current = pc;
-    return pc;
+    dataChannel.onclose = () => {
+      console.log('数据通道已关闭');
+      setMessages(prev => [...prev, '系统：聊天通道已断开。']);
+    };
+
+    dispatch({ type: 'SET_DATA_CHANNEL', payload: dataChannel });
   }
 
-  const handleCallClick = async () => {
-    console.log('呼叫按钮被点击');
-    
-    // 确保本地流存在
-    if (!localStreamRef.current) {
-        console.error('错误：本地媒体流不存在。');
-        return;
+  const createPeerConnection = () => {
+    const pc = new RTCPeerConnection(STUN_SERVERS);
+
+    pc.onicecandidate = (event) => {
+      // 步骤 5.1 修复: 从 ref 读取最新的 socket state
+      const currentSocket = stateRef.current.socket;
+      if (event.candidate && currentSocket) {
+        console.log('发送 ICE Candidate');
+        currentSocket.send(JSON.stringify({ type: 'candidate', candidate: event.candidate }));
+      }
+    };
+
+    pc.ontrack = (event) => {
+      console.log('接收到远程媒体流');
+      dispatch({ type: 'SET_REMOTE_STREAM', payload: event.streams[0] });
+    };
+
+    // 新增: 为被叫方设置 ondatachannel 回调
+    pc.ondatachannel = (event) => {
+      console.log('接收到数据通道',event.channel);
+      const dataChannel = event.channel;
+      setupDataChannelEvents(dataChannel);
+    };
+
+    // 将本地流的轨道添加到连接
+    // 步骤 5.1 修复: 从 ref 读取最新的 localStream state
+    const currentLocalStream = stateRef.current.localStream;
+    if (currentLocalStream) {
+        currentLocalStream.getTracks().forEach(track => {
+            pc.addTrack(track, currentLocalStream);
+        });
     }
-    
-    // 创建 RTCPeerConnection
+
+    dispatch({ type: 'SET_PEER_CONNECTION', payload: pc });
+    return pc;
+  };
+
+  // --- 信令消息处理函数 ---
+  // 步骤 5.1 修复: 明确地将当前 state 传入处理函数
+  const handleOffer = async (offer: RTCSessionDescriptionInit, currentState: IState) => {
+    if (!currentState.localStream) {
+      console.error('收到 offer 时，本地媒体流尚未准备好');
+      return;
+    }
+    const pc = createPeerConnection();
+    await pc.setRemoteDescription(new RTCSessionDescription(offer));
+    const dataChannel = pc.createDataChannel('chat1');
+    setupDataChannelEvents(dataChannel);
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    if (currentState.socket) {
+      console.log('发送 Answer');
+      currentState.socket.send(JSON.stringify({ type: 'answer', answer: answer }));
+    }
+    dispatch({ type: 'SET_CALL_STATUS', payload: CallStatus.IN_CALL });
+  };
+
+  const handleAnswer = async (answer: RTCSessionDescriptionInit, currentState: IState) => {
+    if (currentState.peerConnection) {
+      await currentState.peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+      console.log('收到 Answer，连接已建立');
+      dispatch({ type: 'SET_CALL_STATUS', payload: CallStatus.IN_CALL });
+    }
+  };
+
+  const handleCandidate = async (candidate: RTCIceCandidateInit, currentState: IState) => {
+    if (currentState.peerConnection) {
+      try {
+        await currentState.peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+      } catch (error) {
+        console.error('添加 ICE Candidate 失败:', error);
+      }
+    }
+  };
+
+  // --- UI 事件处理函数 ---
+  const handleStart = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+      console.log('成功获取到本地屏幕流');
+      dispatch({ type: 'SET_LOCAL_STREAM', payload: stream });
+      dispatch({ type: 'SET_CALL_STATUS', payload: CallStatus.SHARING });
+    } catch (error) {
+      console.error('获取屏幕流失败:', error);
+    }
+  };
+
+  const handleCall = async () => {
+    dispatch({ type: 'SET_CALL_STATUS', payload: CallStatus.CALLING });
     const pc = createPeerConnection();
 
-    // 步骤 3.3: 将本地媒体流的轨道添加到 RTCPeerConnection
-    localStreamRef.current.getTracks().forEach(track => {
-        pc.addTrack(track, localStreamRef.current!);
-    });
+    // 新增: 主叫方创建数据通道
+    console.log('创建数据通道');
+    const dataChannel = pc.createDataChannel('chat');
+    setupDataChannelEvents(dataChannel);
 
-    // 步骤 3.4 (部分): 创建 Offer 以启动 ICE 协商
-    // 只有在 setLocalDescription 调用后，ICE 代理才会开始收集候选地址
     try {
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
-      console.log('创建 Offer 成功，并设置为本地描述。ICE Agent 开始收集 Candidates...');
-      // 更新通话状态
-      setCallInProgress(true);
-      // 步骤 3.4: 通过信令服务器发送 Offer
-      if (socketRef.current) {
-        console.log('发送 Offer');
-        socketRef.current.send(JSON.stringify({ type: 'offer', offer: offer }));
+      console.log('发送 Offer');
+      // 步骤 5.1 修复: 从 ref 读取最新的 socket state
+      const currentSocket = stateRef.current.socket;
+      if (currentSocket) {
+        currentSocket.send(JSON.stringify({ type: 'offer', offer: offer }));
       }
     } catch (error) {
       console.error('创建 Offer 失败:', error);
     }
-  }
-
-  const handleStartClick = async () => {
-      if (!startButtonRef.current || !localVideoRef.current || !callButtonRef.current || !hangupButtonRef.current) return;
-      
-      startButtonRef.current.disabled = true;
-      try {
-        // 步骤 1.4: 调用 getDisplayMedia API 获取媒体流
-        const stream = await navigator.mediaDevices.getDisplayMedia({
-          video: true,
-        });
-        console.log('成功获取到本地屏幕流:', stream);
-
-        // 步骤 1.5: 将媒体流在 <video> 元素中播放
-        const localVideo = localVideoRef.current;
-        localVideo.srcObject = stream;
-
-        // 将流存起来，以便后续步骤（比如呼叫）可以使用
-        localStreamRef.current = stream;
-
-        // 更新UI状态
-        setIsSharing(true);
-
-      } catch (error) {
-        console.error('获取屏幕流失败:', error);
-        // 如果用户取消或者发生错误，恢复按钮状态
-        setIsSharing(false);
-      }
-    };
-
-  const handleHangupClick = (shouldNotifyPeer = true) => {
-    console.log('挂断按钮被点击');
-
-    // 0. (新增) 通知对方挂断
-    if (shouldNotifyPeer && socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
-      console.log('发送挂断信令');
-      socketRef.current.send(JSON.stringify({ type: 'hangup' }));
-    }
-
-    // 1. 关闭 RTCPeerConnection
-    if (peerConnectionRef.current) {
-      peerConnectionRef.current.close();
-      peerConnectionRef.current = null;
-    }
-
-    // 2. 停止本地媒体流轨道
-    if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach(track => track.stop());
-      localStreamRef.current = null;
-    }
-    
-    // 3. 重置UI状态
-    // a. 清理 video 元素的 srcObject
-    if (localVideoRef.current) {
-      localVideoRef.current.srcObject = null;
-    }
-    if (remoteVideoRef.current) {
-      remoteVideoRef.current.srcObject = null;
-    }
-    
-    // b. 通过更新 state 来重置按钮状态
-    setIsSharing(false);
-    setCallInProgress(false);
   };
 
-  useEffect(() => {
-    const startButton = startButtonRef.current!;
-    const callButton = callButtonRef.current!;
-    const hangupButton = hangupButtonRef.current!;
-    if (isSharing) {
-      startButton.disabled = true;
-      // 当通话进行中时，禁用呼叫按钮
-      callButton.disabled = callInProgress;
-      // 只有在通话进行中时，才启用挂断按钮
-      hangupButton.disabled = !callInProgress;
-    } else {
-      startButton.disabled = false;
-      callButton.disabled = true;
-      hangupButton.disabled = true;
+  const handleHangup = (shouldNotifyPeer = true) => {
+    console.log('处理挂断逻辑');
+
+    // 步骤 5.1 修复: 从 ref 读取最新的 socket state
+    const currentSocket = stateRef.current.socket;
+    if (shouldNotifyPeer && currentSocket) {
+      console.log('发送挂断信令');
+      currentSocket.send(JSON.stringify({ type: 'hangup' }));
     }
-  }, [isSharing, callInProgress]);
+
+    // 关闭和清理资源
+    stateRef.current.dataChannel?.close(); // 新增: 关闭数据通道
+    stateRef.current.peerConnection?.close();
+    stateRef.current.localStream?.getTracks().forEach(track => track.stop());
+
+    // 重置所有相关状态
+    dispatch({ type: 'RESET_STATE' });
+    setMessages([]); // 新增: 清空聊天记录
+  };
+  
+  const handleSendMessage = () => {
+    const currentDataChannel = stateRef.current.dataChannel;
+    if (chatInput && currentDataChannel?.readyState === 'open') {
+      currentDataChannel.send(chatInput);
+      setMessages(prev => [...prev, `我: ${chatInput}`]);
+      setChatInput('');
+    }
+  };
 
   const handleMouseEnter = () => {
-    console.log('handleMouseEnter', localVideoRef.current?.readyState, isSharing);
-    if (localVideoRef.current && localVideoRef.current.readyState === 4 && isSharing) {
+    if (remoteVideoRef.current && remoteVideoRef.current.readyState === 4) {
       // 放大2倍
-      localVideoRef.current.style.transform = 'scale(2)';
-      localVideoRef.current.style.transformOrigin = 'left center';
+      remoteVideoRef.current.style.transform = 'scale(2)';
+      remoteVideoRef.current.style.transformOrigin = 'left center';
     }
   };
 
   const handleMouseLeave = () => {
-    if (localVideoRef.current && localVideoRef.current.readyState === 4 && isSharing) {
-      localVideoRef.current.style.transform = 'scale(1)';
-      localVideoRef.current.style.transformOrigin = 'left center';
+    if (remoteVideoRef.current && remoteVideoRef.current.readyState === 4) {
+      remoteVideoRef.current.style.transform = 'scale(1)';
+      remoteVideoRef.current.style.transformOrigin = 'left center';
     }
   };
 
   return (
     <div className={styles.container}>
-      <h1 className={styles.title}>WebRTC 屏幕共享</h1>
+      <h1 className={styles.title}>WebRTC 屏幕共享 (已优化)</h1>
       <div className={styles.videoContainer}>
         <div className={styles.videoBox}>
           <h2>本地屏幕</h2>
           <video
-            ref={localVideoRef} // 将 video 元素与 ref 关联
+            ref={localVideoRef}
             className={styles.videoPlayer}
             autoPlay
             playsInline
             muted
-            onMouseEnter={handleMouseEnter}
-            onMouseLeave={handleMouseLeave}
+            
           ></video>
         </div>
         <div className={styles.videoBox}>
           <h2>远程屏幕</h2>
           <video
-            ref={remoteVideoRef} // 将 video 元素与 ref 关联
+            ref={remoteVideoRef}
             className={styles.videoPlayer}
             autoPlay
             playsInline
+            onMouseEnter={handleMouseEnter}
+            onMouseLeave={handleMouseLeave}
           ></video>
         </div>
       </div>
       <div className={styles.buttonContainer}>
-        <button ref={startButtonRef} className={styles.button} onClick={handleStartClick}>
+        <button
+          className={styles.button}
+          onClick={handleStart}
+          disabled={state.callStatus !== CallStatus.IDLE}
+        >
           开始分享
         </button>
-        <button ref={callButtonRef} className={styles.button} onClick={handleCallClick}>
+        <button
+          className={styles.button}
+          onClick={handleCall}
+          disabled={state.callStatus !== CallStatus.SHARING}
+        >
           呼叫
         </button>
-        <button ref={hangupButtonRef} className={styles.button} onClick={() => handleHangupClick(true)}>
+        <button
+          className={styles.button}
+          onClick={() => handleHangup(true)}
+          disabled={state.callStatus !== CallStatus.CALLING && state.callStatus !== CallStatus.IN_CALL}
+        >
           挂断
+        </button>
+      </div>
+      <div className={styles.chatContainer}>
+        <h3>聊天消息</h3>
+        <div className={styles.messageBox}>
+          {messages.map((msg, index) => (
+            <p key={index}>{msg}</p>
+          ))}
+        </div>
+        <textarea
+          value={chatInput}
+          onChange={(e) => setChatInput(e.target.value)}
+          placeholder="输入消息..."
+          disabled={state.dataChannel?.readyState !== 'open'}
+        />
+        <button
+          onClick={handleSendMessage}
+          disabled={state.dataChannel?.readyState !== 'open'}
+        >
+          发送
         </button>
       </div>
     </div>
