@@ -30,16 +30,16 @@ const getParams = (url, queryName) => {
 const broadcastMessage = (roomId, message) => {
   const userMap = roomMap.get(roomId);
   userMap.forEach(({ socket }) => {
-    socket.emit('message', message);
+    socket.emit(message.type, message);
   });
 };
 
-const generateMessage = (type, msg, status = 200, data = null) => {
+const generateMessage = (type, msg, status = 200, payload = null) => {
   return {
     type,
     msg,
     status,
-    data,
+    payload,
   };
 };
 
@@ -47,7 +47,7 @@ const sendMsgToUser = (roomId, userId, message) => {
   const userMap = roomMap.get(roomId);
   if (userMap && userMap.has(userId)) {
     const socket = userMap.get(userId).socket;
-    socket.emit('message', message);
+    socket.emit(message.type, message);
     return true;
   }
   console.log(`用户${userId}不在房间${roomId}`);
@@ -86,16 +86,27 @@ const wssEventListener = async socket => {
 
   socket.on('roomUserList', data => {
     const userMap = roomMap.get(data['roomId']);
-    const userList = Array.from(userMap.values()).map(user => user.userId);
+    const userList = Array.from(userMap.values()).map(user => {
+      return { userId: user.userId, roomId: user.roomId };
+    });
     socket.emit('roomUserList', userList);
   });
 
   socket.on('call', data => {
     const targetUserId = data['targetUserId'];
+    const userId = data['userId'];
     const roomId = data['roomId'];
     const userMap = roomMap.get(roomId);
     if (userMap.has(targetUserId)) {
-      sendMsgToUser(roomId, targetUserId, generateMessage('call', `用户${userId}呼叫用户${targetUserId}`));
+      sendMsgToUser(
+        roomId,
+        targetUserId,
+        generateMessage('call', `用户${userId}呼叫用户${targetUserId}`, 200, {
+          fromUserId: userId,
+          toUserId: targetUserId,
+          roomId,
+        }),
+      );
     } else {
       console.log(`call 用户${targetUserId}不在房间${roomId}`);
     }
@@ -117,7 +128,7 @@ const wssEventListener = async socket => {
     const roomId = data['roomId'];
     const userMap = roomMap.get(roomId);
     if (userMap.has(targetUserId)) {
-      sendMsgToUser(roomId, targetUserId, generateMessage('offer', `用户${userId}发送offer信息给用户${targetUserId}`));
+      sendMsgToUser(roomId, targetUserId, generateMessage('offer', `用户${userId}发送offer信息给用户${targetUserId}`, 200, { offer: data['offer'] }));
     } else {
       console.log(`offer 用户${targetUserId}不在房间${roomId}`);
     }
@@ -128,7 +139,7 @@ const wssEventListener = async socket => {
     const roomId = data['roomId'];
     const userMap = roomMap.get(roomId);
     if (userMap.has(targetUserId)) {
-      sendMsgToUser(roomId, targetUserId, generateMessage('answer', `用户${userId}发送answer信息给用户${targetUserId}`));
+      sendMsgToUser(roomId, targetUserId, generateMessage('answer', `用户${userId}发送answer信息给用户${targetUserId}`, 200, { answer: data['answer'] }));
     } else {
       console.log(`answer 用户${targetUserId}不在房间${roomId}`);
     }
