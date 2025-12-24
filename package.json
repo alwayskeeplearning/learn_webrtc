@@ -20,10 +20,6 @@
   "license": "MIT",
   "packageManager": "pnpm@9.13.0",
   "lint-staged": {
-    "src/**/*.{ts,js}": [
-      "eslint --cache --fix",
-      "prettier --write"
-    ],
     "src/**/*.{css,less}": [
       "prettier --write"
     ]

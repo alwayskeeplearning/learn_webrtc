@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="zh">
+
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>兼容性更好的 AR Demo</title>
+	<script type="module" src="/static/model-viewer.min.js"></script>
+	<style>
+		body {
+			margin: 0;
+			padding: 0;
+			font-family: sans-serif;
+		}
+
+		model-viewer {
+			width: 100vw;
+			height: 100vh;
+			background-color: #eee;
+		}
+
+		#ar-button {
+
+			padding: 10px 20px;
+			background: white;
+			border: 1px solid #ccc;
+			border-radius: 20px;
+			font-weight: bold;
+			box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+			z-index: 100;
+			position: absolute;
+    top: 20px; 
+    left: 50%;
+    transform: translateX(-50%);
+    
+    /* 新增这两行 */
+    z-index: 9999 !important; /* 强制最顶层 */
+    display: block !important; /* 强制显示 */
+		}
+	</style>
+</head>
+
+<body>
+
+	<model-viewer src="/static/Astronaut.glb"
+		ios-src="/static/Astronaut.usdz" alt="一个 3D 宇航员模型" ar
+		ar-modes="webxr scene-viewer quick-look" camera-controls shadow-intensity="1">
+
+		<button slot="ar-button" id="ar-button">
+			👋 点击这里进入 AR 模式
+		</button>
+
+	</model-viewer>
+
+</body>
+
+</html>
